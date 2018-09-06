@@ -51,15 +51,21 @@ option(USE_AVX2       "Build tiny-dnn with AVX2 library support"   OFF)
 option(USE_TBB        "Build tiny-dnn with TBB library support"    OFF)
 option(USE_OMP        "Build tiny-dnn with OMP library support"    OFF)
 option(USE_NNPACK     "Build tiny-dnn with NNPACK library support" OFF)
+option(USE_CBLAS      "Build tiny-dnn with CBLAS library support" OFF)
 option(USE_OPENCL     "Build tiny-dnn with OpenCL library support" OFF) 
 option(USE_LIBDNN     "Build tiny-dnn with GreenteaLibDNN library support" OFF)
-option(USE_SERIALIZER "Build tiny-dnn with Serialization support" ON)
+option(USE_SERIALIZER "Build tiny-dnn with Serialization support"   ON)
 option(USE_DOUBLE     "Build tiny-dnn with double precision computations"  OFF)
+option(USE_IMAGE_API  "Build tiny-dnn with Image API support"       ON)
+option(USE_GEMMLOWP   "Build tiny-dnn with gemmlowp support"       OFF)
 
-option(BUILD_TESTS    "Set to ON to build tests"              OFF)
-option(BUILD_EXAMPLES "Set to ON to build examples"           OFF)
-option(BUILD_DOCS     "Set to ON to build documentation"      OFF)
-option(COVERALLS      "Set to ON to build with code coverage" OFF)
+option(BUILD_TESTS      "Set to ON to build tests"              OFF)
+option(BUILD_EXAMPLES   "Set to ON to build examples"           OFF)
+option(BUILD_DOCS       "Set to ON to build documentation"      OFF)
+option(BUILD_BENCHMARKS "Set to ON to build benchmarks"         OFF)
+option(COVERALLS        "Set to ON to build with code coverage" OFF)
+option(PROFILE          "Set to ON to build with profiling"     OFF)
+option(USE_ASAN         "Set to ON to build with ASan"          OFF)
 
 ####
 # Create the library target
@@ -109,6 +115,14 @@ if(USE_DOUBLE)
     add_definitions(-DCNN_USE_DOUBLE)
 endif()
 
+if(USE_IMAGE_API)
+    add_definitions(-DDNN_USE_IMAGE_API)
+endif()
+
+if(USE_GEMMLOWP)
+    add_definitions(-DUSE_GEMMLOWP)
+endif()
+
 # Find Open Multi-Processing (OpenMP)
 find_package(OpenMP QUIET)
 if(USE_OMP AND OPENMP_FOUND)
@@ -142,6 +156,23 @@ elseif(USE_NNPACK AND NOT NNPACK_FOUND)
     # set the paths to headers and libs by hand.
     message(FATAL_ERROR "Can't find NNPACK. Please set NNPACK_INCLUDE_DIR "
             " & NNPACK_LIB")
+endif()
+
+# Find CBLAS: Acceleration package for linear algebra
+if(USE_CBLAS)
+    # In case the user sets the flag USE_CBLAS to ON, the CMake build-tree
+    # will require to find CBLAS in your system.
+    find_package(BLAS REQUIRED)
+    if(BLAS_FOUND)
+        if (NOT EXISTS "/usr/include/cblas.h" OR NOT EXISTS ${BLAS_LIBRARIES})
+            message(FATAL_ERROR "CBLAS path error.")
+        endif()
+        add_definitions(-DCNN_USE_CBLAS)
+        list(APPEND REQUIRED_LIBRARIES ${BLAS_LIBRARIES})
+    else()
+        message(FATAL_ERROR "Can't find CBLAS. On Ubunbu, you may want to "
+                "install it by:\n  sudo apt-get install libatlas-dev")
+    endif()
 endif()
 
 # in case that TBB and OMP are not enabled/found,
@@ -187,13 +218,15 @@ endif()
 ####
 # Setup the compiler options
 
-# set c++ standard to c++11.
+# set c++ standard to c++14.
 # Note: not working on CMake 2.8. We assume that user has
-#       a compiler with C++11 support.
+#       a compiler with C++14 support.
 
-set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-message(STATUS "C++11 support has been enabled by default.")
+message(STATUS "C++14 support has been enabled by default.")
+
+include(cotire)
 
 # Unix
 if(CMAKE_COMPILER_IS_GNUCXX OR MINGW OR
@@ -216,13 +249,13 @@ if(CMAKE_COMPILER_IS_GNUCXX OR MINGW OR
     endif(USE_AVX AND COMPILER_HAS_AVX_FLAG)
     # set Advanced Vector Extensions 2 (AVX2)
     if(USE_AVX2 AND COMPILER_HAS_AVX2_FLAG)
-        add_definitions(-DCNN_USE_AVX)
+        add_definitions(-DCNN_USE_AVX2)
         set(EXTRA_C_FLAGS "${EXTRA_C_FLAGS} -mavx2 -mfma -march=core-avx2")
     endif(USE_AVX2 AND COMPILER_HAS_AVX2_FLAG)
 
     # include extra flags to the compiler
     # TODO: add info about those flags.
-    set(EXTRA_C_FLAGS "${EXTRA_C_FLAGS} -Wall -Wpedantic -Wno-narrowing")
+    set(EXTRA_C_FLAGS "${EXTRA_C_FLAGS} -Wall -Wpedantic -Wno-narrowing -Wno-deprecated")
     set(EXTRA_C_FLAGS_RELEASE "${EXTRA_C_FLAGS_RELEASE} -O3")
     set(EXTRA_C_FLAGS_DEBUG   "${EXTRA_C_FLAGS_DEBUG} -g3 -pthread")
 elseif(MSVC)
@@ -235,7 +268,7 @@ elseif(MSVC)
         set(EXTRA_C_FLAGS "${EXTRA_C_FLAGS} /arch:AVX")
     endif(USE_AVX)
     if(USE_AVX2)
-        add_definitions(-DCNN_USE_AVX)
+        add_definitions(-DCNN_USE_AVX2)
         set(EXTRA_C_FLAGS "${EXTRA_C_FLAGS} /arch:AVX2")
     endif(USE_AVX2)
     # include specific flags for release and debug modes.
@@ -243,7 +276,7 @@ elseif(MSVC)
         /Ox /Oi /Ot /Oy /GL /fp:fast /GS-")
     set(CMAKE_EXE_LINKER_FLAGS_RELEASE "${CMAKE_EXE_LINKER_FLAGS_RELEASE} /LTCG")
     set(EXTRA_C_FLAGS_DEBUG "${EXTRA_C_FLAGS_DEBUG}")
-    set(EXTRA_C_FLAGS "${EXTRA_C_FLAGS} /bigobj")
+    set(EXTRA_C_FLAGS "${EXTRA_C_FLAGS} /W4 /bigobj")
     # this is fine
     add_definitions(-D _CRT_SECURE_NO_WARNINGS)
     add_definitions(-D _SCL_SECURE_NO_WARNINGS)
@@ -257,6 +290,21 @@ set(CMAKE_CXX_FLAGS         "${CMAKE_CXX_FLAGS} ${EXTRA_C_FLAGS}")
 set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} ${EXTRA_C_FLAGS_RELEASE}")
 set(CMAKE_CXX_FLAGS_DEBUG   "${CMAKE_CXX_FLAGS_DEBUG} ${EXTRA_C_FLAGS_DEBUG}")
 
+if(PROFILE AND (CMAKE_COMPILER_IS_GNUCXX OR MINGW OR
+    CMAKE_CXX_COMPILER_ID MATCHES "Clang"))
+    set(CMAKE_CXX_FLAGS     "${CMAKE_CXX_FLAGS} -pg")
+endif()
+
+if (USE_ASAN)
+    #enable ASan
+    set(ENV{ASAN_OPTIONS} "strict_string_checks=1:detect_stack_use_after_return=1:check_initialization_order=1:strict_init_order=1:symbolize=1")
+    CHECK_CXX_COMPILER_FLAG(-fsanitize-address-use-after-scope HasUseAfterScope)
+    set(ASAN_FLAGS "-fsanitize=address -fno-omit-frame-pointer")
+    if (HasUseAfterScope)
+        set(ASAN_FLAGS "${ASAN_FLAGS} -fsanitize-address-use-after-scope")
+    endif()
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${ASAN_FLAGS}")
+endif()
 ####
 # Write the config.h
 # TODO: replace for tiny_dnn/config.h
@@ -317,6 +365,7 @@ write_basic_package_version_file(
     VERSION ${PROJECT_VERSION}
     COMPATIBILITY SameMajorVersion)
 
+set(CMAKE_CXX_FLAGS         "${CMAKE_CXX_FLAGS} ${EXTRA_C_FLAGS}")
 # Create *-targets.cmake file for build directory
 install(TARGETS ${project_library_target_name}
         EXPORT  ${targets_export_name}
@@ -358,6 +407,10 @@ endif(BUILD_TESTS)
 if(BUILD_DOCS)
     add_subdirectory(docs)
 endif(BUILD_DOCS)
+
+if(BUILD_BENCHMARKS)
+    add_subdirectory(benchmarks)
+endif(BUILD_BENCHMARKS)
 
 ####
 # Configuration summary
